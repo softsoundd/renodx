@@ -1,0 +1,25 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
+  "id": "mirrorsedge",
+  "title": "Mirror's Edge",
+  "maintainers": [
+    "XgarhontX",
+    "softsoundd"
+  ],
+  "status": "beta",
+  "summary": "HDR for Mirror's Edge (2009, UE3/D3D9). Supports the vanilla shaders and the Faithful Luma shader replacement.",
+  "tags": [
+    "unreal-engine-3",
+    "d3d9"
+  ],
+  "deploy": {
+    "game_exe": "MirrorsEdge.exe",
+    "process_name": "MirrorsEdge.exe",
+    "api": "d3d9",
+    "steam_appid": 17410,
+    "gog_product_id": 1893001152,
+    "architecture": [
+      "x86"
+    ]
+  }
+}
