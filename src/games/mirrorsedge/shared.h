@@ -70,19 +70,29 @@ struct ShaderInjectData {
 
   float exposure_model;
   float bloom_model;
-  float fl_black_floor;
   float fl_dark_boost;
-
   float faithful_luma_detected;           // set when the game creates a Faithful Luma compiled shader
+
   float swap_chain_encoding_color_space;  // color::convert::COLOR_SPACE_BT2020 for HDR10, BT709 for scRGB
-  float padding0;
-  float padding1;
+  float tone_map_exposure;                // RenoDRT grade (tone map type 3)
+  float tone_map_highlights;
+  float tone_map_shadows;
+
+  float tone_map_contrast;
+  float tone_map_saturation;
+  float tone_map_highlight_saturation;
+  float tone_map_blowout;
+
+  float tone_map_flare;
+  float color_grade_strength;
+  float custom_saturation_clip;  // vanilla per-channel clip emulation in the SDR proxy (RenoDRT type)
+  float custom_hue_clip;
 };
 
 #ifndef __cplusplus
 #if (__SHADER_TARGET_MAJOR == 3)
 
-float4 shader_injection[11] : register(c50);
+float4 shader_injection[13] : register(c50);
 
 #define GAMMA_CORRECTION                 shader_injection[0][0]
 #define SWAP_CHAIN_ENCODING              shader_injection[0][1]
@@ -131,11 +141,23 @@ float4 shader_injection[11] : register(c50);
 
 #define EXPOSURE_MODEL                   shader_injection[9][0]
 #define BLOOM_MODEL                      shader_injection[9][1]
-#define FL_BLACK_FLOOR                   shader_injection[9][2]
-#define FL_DARK_BOOST                    shader_injection[9][3]
+#define FL_DARK_BOOST                    shader_injection[9][2]
+#define FAITHFUL_LUMA_DETECTED           shader_injection[9][3]
 
-#define FAITHFUL_LUMA_DETECTED           shader_injection[10][0]
-#define SWAP_CHAIN_ENCODING_COLOR_SPACE  shader_injection[10][1]
+#define SWAP_CHAIN_ENCODING_COLOR_SPACE  shader_injection[10][0]
+#define TONE_MAP_EXPOSURE                shader_injection[10][1]
+#define TONE_MAP_HIGHLIGHTS              shader_injection[10][2]
+#define TONE_MAP_SHADOWS                 shader_injection[10][3]
+
+#define TONE_MAP_CONTRAST                shader_injection[11][0]
+#define TONE_MAP_SATURATION              shader_injection[11][1]
+#define TONE_MAP_HIGHLIGHT_SATURATION    shader_injection[11][2]
+#define TONE_MAP_BLOWOUT                 shader_injection[11][3]
+
+#define TONE_MAP_FLARE                   shader_injection[12][0]
+#define COLOR_GRADE_STRENGTH             shader_injection[12][1]
+#define CUSTOM_SATURATION_CLIP           shader_injection[12][2]
+#define CUSTOM_HUE_CLIP                  shader_injection[12][3]
 
 #else
 
@@ -187,19 +209,42 @@ cbuffer shader_injection : register(CBUFFERB) {
 #define TONE_MAP_LOOK                    shader_injection.tone_map_look
 #define EXPOSURE_MODEL                   shader_injection.exposure_model
 #define BLOOM_MODEL                      shader_injection.bloom_model
-#define FL_BLACK_FLOOR                   shader_injection.fl_black_floor
 #define FL_DARK_BOOST                    shader_injection.fl_dark_boost
 #define FAITHFUL_LUMA_DETECTED           shader_injection.faithful_luma_detected
 #define SWAP_CHAIN_ENCODING_COLOR_SPACE  shader_injection.swap_chain_encoding_color_space
+#define TONE_MAP_EXPOSURE                shader_injection.tone_map_exposure
+#define TONE_MAP_HIGHLIGHTS              shader_injection.tone_map_highlights
+#define TONE_MAP_SHADOWS                 shader_injection.tone_map_shadows
+#define TONE_MAP_CONTRAST                shader_injection.tone_map_contrast
+#define TONE_MAP_SATURATION              shader_injection.tone_map_saturation
+#define TONE_MAP_HIGHLIGHT_SATURATION    shader_injection.tone_map_highlight_saturation
+#define TONE_MAP_BLOWOUT                 shader_injection.tone_map_blowout
+#define TONE_MAP_FLARE                   shader_injection.tone_map_flare
+#define COLOR_GRADE_STRENGTH             shader_injection.color_grade_strength
+#define CUSTOM_SATURATION_CLIP           shader_injection.custom_saturation_clip
+#define CUSTOM_HUE_CLIP                  shader_injection.custom_hue_clip
 
 #endif
 
 // renodx::draw configuration. The intermediate is BT.709 scaled by diffuse/graphics white and
 // encoded with (gamma correction + 1): sRGB when correction is off, 2.2/2.4 when emulating.
+// ToneMapPass is only called from this mod's "RenoDRT (Neutwo)" tone map type, so RenoDX's own
+// type selector is pinned to RenoDRT.
 #define RENODX_PEAK_WHITE_NITS                 PEAK_WHITE_NITS
 #define RENODX_DIFFUSE_WHITE_NITS              DIFFUSE_WHITE_NITS
 #define RENODX_GRAPHICS_WHITE_NITS             GRAPHICS_WHITE_NITS
-#define RENODX_TONE_MAP_TYPE                   TONE_MAP_TYPE
+#define RENODX_TONE_MAP_TYPE                   renodx::draw::TONE_MAP_TYPE_RENO_DRT
+#define RENODX_RENO_DRT_TONE_MAP_METHOD        renodx::tonemap::renodrt::config::tone_map_method::NEUTWO
+#define RENODX_TONE_MAP_EXPOSURE               TONE_MAP_EXPOSURE
+#define RENODX_TONE_MAP_HIGHLIGHTS             TONE_MAP_HIGHLIGHTS
+#define RENODX_TONE_MAP_SHADOWS                TONE_MAP_SHADOWS
+#define RENODX_TONE_MAP_CONTRAST               TONE_MAP_CONTRAST
+#define RENODX_TONE_MAP_SATURATION             TONE_MAP_SATURATION
+#define RENODX_TONE_MAP_HIGHLIGHT_SATURATION   TONE_MAP_HIGHLIGHT_SATURATION
+#define RENODX_TONE_MAP_BLOWOUT                TONE_MAP_BLOWOUT
+#define RENODX_TONE_MAP_FLARE                  TONE_MAP_FLARE
+#define RENODX_TONE_MAP_HUE_SHIFT              0.f  // the vanilla clip is emulated in the SDR proxy instead
+#define RENODX_COLOR_GRADE_STRENGTH            COLOR_GRADE_STRENGTH
 #define RENODX_GAMMA_CORRECTION                GAMMA_CORRECTION
 #define RENODX_INTERMEDIATE_SCALING            (DIFFUSE_WHITE_NITS / GRAPHICS_WHITE_NITS)
 #define RENODX_INTERMEDIATE_ENCODING           (GAMMA_CORRECTION + 1.f)

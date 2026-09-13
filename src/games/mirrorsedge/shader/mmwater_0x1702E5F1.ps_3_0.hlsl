@@ -34,9 +34,11 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR
     return o;
   }
 
-  // HDR: no clip; game gamma as shown by an sRGB display, then the same peak rolloff as the tonemap
+  // HDR: no clip; game gamma as shown by an sRGB display, then the same peak handling as the tonemap
   o.xyz = renodx::color::correct::Gamma(r0.xyz, true, gamma);
-  if (TONE_MAP_TYPE >= 2) {
+  if (TONE_MAP_TYPE == 3) {
+    o.xyz = renodx::draw::ToneMapPass(o.xyz);
+  } else if (TONE_MAP_TYPE == 2) {
     const float p = PEAK_WHITE_NITS / DIFFUSE_WHITE_NITS;
     const float e = EXPECTED_WHITE_NITS / DIFFUSE_WHITE_NITS;
     o.xyz = renodx::tonemap::HermiteSplineLuminanceRolloff(o.xyz, p, e);

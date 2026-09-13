@@ -1,6 +1,4 @@
 // TdToneMappingPixelShader.usf (also included by shader/faithfulluma/tonemap_0x09C4EF79)
-sampler2D ColorCurvesKTexture : register( s1 );
-sampler2D ColorCurvesMTexture : register( s2 );
 sampler2D ExposureTexture : register( s3 );
 float4 GammaColorScaleAndInverse : register( c5 );
 float4 GammaOverlayColor : register( c6 );
@@ -11,24 +9,8 @@ float4 SceneScaledLuminanceWeights : register( c4 );
 float4 SceneShadowsAndDesaturation : register( c0 );
 
 #include "./common.hlsl"
+#include "./color_curves.hlsl"
 #include "./reinhard1.hlsl"
-
-// Game gamma encode + Ms/Bs colour curves. 15/16 is LUT addressing: the curve textures are point
-// sampled, segment = floor(15x), texel 15 only at x = 1.
-float3 GammaAndCurves(float3 color, float gamma_inv) {
-  float3 encoded = pow(color, gamma_inv);  // 1/DisplayGamma, 1/2.0 at the in-game Brightness midpoint
-
-  const float correction = (15.f / 16.f);
-  float4 r_curve = tex2D(ColorCurvesKTexture, float2(encoded.x * correction, 0));
-  float4 g_curve = tex2D(ColorCurvesKTexture, float2(encoded.y * correction, 0));
-  float4 b_curve = tex2D(ColorCurvesMTexture, float2(encoded.z * correction, 0));
-  float3 curved;
-  curved.x = encoded.x * r_curve.x + r_curve.y;
-  curved.y = encoded.y * g_curve.z + g_curve.w;
-  curved.z = encoded.z * b_curve.x + b_curve.y;
-
-  return lerp(encoded, curved, VCG_LUT);  // strength
-}
 
 float4 main(float2 texcoord : TEXCOORD) : COLOR
 {
@@ -116,6 +98,13 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR
         l1 = min(l1, 1);
         colorN.xyz *= l1 / l;
       }
+      if (TONE_MAP_TYPE == 3) {
+        // Vanilla clipped per channel at SDR white, desaturating and hue shifting bright colors.
+        // Emulate it in the proxy with a soft per-channel knee (Saturation Clip) and keep the
+        // chosen share of its hue shift (Hue Clip); the grade and the HDR bridge inherit both.
+        colorN = lerp(colorN, renodx::tonemap::ExponentialRollOff(r0.xyz, 0.75f), CUSTOM_SATURATION_CLIP);
+        if (CUSTOM_HUE_CLIP != 1.f) colorN = renodx::color::correct::Hue(colorN, r0.xyz, 1.f - CUSTOM_HUE_CLIP);
+      }
       r0.xyz = colorN;
     }
 
@@ -152,10 +141,10 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR
   o.xyz = GammaAndCurves(r1.xyz, gamma_inv);
 
   if (faithful_luma) {
-    // Post-curve display-space corrections. Faithful Luma's `/ CurveDomainWhite` normalisation is not
-    // reproduced: 15/16 is LUT addressing and texel 15 already maps white to y(1).
+    // Faithful Luma's `/ CurveDomainWhite` normalisation and black floor rolloff are not reproduced:
+    // 15/16 is LUT addressing (texel 15 already maps white to y(1)), and the vanilla #020202 floor is a
+    // game-compiler pow() epsilon these shaders do not have.
     o.xyz = FaithfulLumaWhiteNeutrality(saturate(o.xyz));
-    if (FL_BLACK_FLOOR != 0) o.xyz = FaithfulLumaBlackFloor(o.xyz);
   }
 
   // RETURN: SDR
@@ -168,35 +157,44 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR
 
   //////////////////////////////////////////////////////////////////////////////////////
 
-  // Upgrade: graded SDR (decoded with the game gamma, the exact inverse of the encode) + luminance delta
+  // graded SDR, decoded with the game gamma (the exact inverse of the encode)
   o.xyz = max(o.xyz, 0);
   o.xyz = renodx::color::gamma::Decode(o.xyz, gamma);
-  o.xyz = UpgradeToneMap1(colorU, colorN, o.xyz);
 
-  // game gamma as shown by an sRGB display
-  float3 oBack = o.xyz;
-  o.xyz = renodx::color::correct::Gamma(o.xyz, true, gamma);
-  o.xyz = lerp(oBack, o.xyz, VCG_LUT);
+  if (TONE_MAP_TYPE == 3) {
+    // RenoDRT: the graded SDR as an sRGB display shows it is the grade reference; the delta to the
+    // neutral SDR proxy is restored onto the untonemapped scene, then Neutwo rolls off to the peak.
+    float3 graded_sdr = lerp(o.xyz, renodx::color::correct::Gamma(o.xyz, true, gamma), VCG_LUT);
+    o.xyz = renodx::draw::ToneMapPass(colorU, graded_sdr, colorN);
+  } else {
+    // Upgrade: graded SDR + luminance delta
+    o.xyz = UpgradeToneMap1(colorU, colorN, o.xyz);
 
-  // user color grade
-  {
-    float l = renodx::color::y::from::BT709(o.xyz);
-    if (l > 0) {
-      float l1 = l;
-      float mg = 0.36 * CG_MIDDLE;
-      l1 = renodx::color::grade::Contrast(l1, CG_CONTRAST, mg);
-      l1 = renodx::color::grade::Shadows(l1, CG_SHADOWS, mg);
-      l1 = renodx::color::grade::Highlights(l1, CG_HIGHLIGHTS, mg);  // highlights junky
-      o.xyz *= l1 / l;
+    // game gamma as shown by an sRGB display
+    float3 oBack = o.xyz;
+    o.xyz = renodx::color::correct::Gamma(o.xyz, true, gamma);
+    o.xyz = lerp(oBack, o.xyz, VCG_LUT);
+
+    // user color grade
+    {
+      float l = renodx::color::y::from::BT709(o.xyz);
+      if (l > 0) {
+        float l1 = l;
+        float mg = 0.36 * CG_MIDDLE;
+        l1 = renodx::color::grade::Contrast(l1, CG_CONTRAST, mg);
+        l1 = renodx::color::grade::Shadows(l1, CG_SHADOWS, mg);
+        l1 = renodx::color::grade::Highlights(l1, CG_HIGHLIGHTS, mg);  // highlights junky
+        o.xyz *= l1 / l;
+      }
     }
-  }
 
-  // HDR Tonemap
-  if (TONE_MAP_TYPE >= 2)
-  {
-    const float p = PEAK_WHITE_NITS / DIFFUSE_WHITE_NITS;
-    const float e = EXPECTED_WHITE_NITS / DIFFUSE_WHITE_NITS;
-    o.xyz = renodx::tonemap::HermiteSplineLuminanceRolloff(o.xyz, p, e);
+    // HDR Tonemap
+    if (TONE_MAP_TYPE == 2)
+    {
+      const float p = PEAK_WHITE_NITS / DIFFUSE_WHITE_NITS;
+      const float e = EXPECTED_WHITE_NITS / DIFFUSE_WHITE_NITS;
+      o.xyz = renodx::tonemap::HermiteSplineLuminanceRolloff(o.xyz, p, e);
+    }
   }
 
   // Fake WCG

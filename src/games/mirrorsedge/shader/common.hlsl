@@ -84,24 +84,6 @@ float3 FaithfulLumaWhiteNeutrality(float3 color) {
   return saturate(corrected * lerp(1.0f, energy_protection, white_mask));
 }
 
-// Display space: near-black rolloff, 2.5/255 -> 0, unchanged from 16/255 up.
-float3 FaithfulLumaBlackFloor(float3 color) {
-  const float old_black_point = 2.5f / 255.0f;
-  const float roll_off_stopping_point = 16.0f / 255.0f;
-  const float roll_off_range = roll_off_stopping_point - old_black_point;
-  const float min_lum = (0.0f - old_black_point) / roll_off_range;
-
-  float display_luma = dot(color, LUMA_WEIGHTS_709);
-  if (display_luma >= roll_off_stopping_point) return color;
-
-  float t = (display_luma - old_black_point) / roll_off_range;
-  float toe = 1.0f - t;
-  toe *= toe;
-  toe *= toe;
-  float corrected_luma = max(0.0f, (min_lum * toe + t) * roll_off_range + old_black_point);
-  return saturate(color * (corrected_luma / max(display_luma, 0.0001f)));
-}
-
 // Faithful Luma bloom (DOFAndBloomGather/Blend .usf): Rec.709 luminance quadratic soft knee.
 // Returns the factor applied to the scene color; `scatter` adds the gather pass hot-source weight.
 float FaithfulLumaBloomFactor(float3 scene_color, float luma, bool scatter) {
