@@ -1,4 +1,4 @@
-// TdToneMappingPixelShader.usf (also included by shader/faithfulluma/tonemap_0x09C4EF79)
+// TdToneMappingPixelShader.usf (also included by the shader/faithfulluma/tonemap_* variants)
 sampler2D ExposureTexture : register( s3 );
 float4 GammaColorScaleAndInverse : register( c5 );
 float4 GammaOverlayColor : register( c6 );
@@ -40,20 +40,18 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR
   float3 colorN = r0.xyz;  // neutral SDR proxy (tonemapped, ungraded)
 
   //////////////////////////////////////////////////////////////////////////////////////
-  // Faithful Luma look: luminance-anchored Reinhard in linear HDR, blended midtone grade.
+  // Faithful Luma look: the shipped grade without its clip, then the Faithful Luma proxy (see
+  // common.hlsl); the graded HDR colour is the bridge reference and the proxy is the neutral SDR.
   if (faithful_luma) {
-    float3 graded_hdr = max(0, colorU * SceneInverseHighLights.xyz - scene_shadows);
-    float luma_tm;
-    float3 tonemapped = FaithfulLumaToneMap(graded_hdr, luma_tm);
-    colorU = graded_hdr;
-    colorN = tonemapped;
-
-    float3 final_color = FaithfulLumaMidTones(tonemapped, luma_tm, SceneMidTones.xyz);
+    float3 graded = pow(max(colorU * SceneInverseHighLights.xyz - scene_shadows, 0.0f), SceneMidTones.xyz);
+    float3 proxy = (TONE_MAP_TYPE == 0) ? FaithfulLumaSdrProxy(graded) : FaithfulLumaHdrProxy(graded);
+    colorU = graded;
+    colorN = proxy;
 
     // desaturation / overlay
-    float scaled_luminance = dot(final_color, SceneScaledLuminanceWeights.xyz);
-    r0.xyz = GammaOverlayColor.xyz + final_color * scene_desaturation + scaled_luminance;
-    r0.xyz = lerp(tonemapped, r0.xyz, VCG_OTHER);
+    float scaled_luminance = dot(proxy, SceneScaledLuminanceWeights.xyz);
+    r0.xyz = GammaOverlayColor.xyz + proxy * scene_desaturation + scaled_luminance;
+    r0.xyz = lerp(proxy, r0.xyz, VCG_OTHER);
     r0.xyz = r0.xyz * GammaColorScaleAndInverse.xyz;
   } else {
     // colorU blowout
@@ -139,13 +137,6 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR
 
   // gamma encode + curves LUTs
   o.xyz = GammaAndCurves(r1.xyz, gamma_inv);
-
-  if (faithful_luma) {
-    // Faithful Luma's `/ CurveDomainWhite` normalisation and black floor rolloff are not reproduced:
-    // 15/16 is LUT addressing (texel 15 already maps white to y(1)), and the vanilla #020202 floor is a
-    // game-compiler pow() epsilon these shaders do not have.
-    o.xyz = FaithfulLumaWhiteNeutrality(saturate(o.xyz));
-  }
 
   // RETURN: SDR
   if (TONE_MAP_TYPE == 0) {

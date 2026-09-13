@@ -70,8 +70,8 @@ struct ShaderInjectData {
 
   float exposure_model;
   float bloom_model;
-  float fl_dark_boost;
-  float faithful_luma_detected;           // set when the game creates a Faithful Luma compiled shader
+  float unused_9_2;
+  float faithful_luma_detected;  // set when the game creates a Faithful Luma compiled shader
 
   float swap_chain_encoding_color_space;  // color::convert::COLOR_SPACE_BT2020 for HDR10, BT709 for scRGB
   float tone_map_exposure;                // RenoDRT grade (tone map type 3)
@@ -141,7 +141,6 @@ float4 shader_injection[13] : register(c50);
 
 #define EXPOSURE_MODEL                   shader_injection[9][0]
 #define BLOOM_MODEL                      shader_injection[9][1]
-#define FL_DARK_BOOST                    shader_injection[9][2]
 #define FAITHFUL_LUMA_DETECTED           shader_injection[9][3]
 
 #define SWAP_CHAIN_ENCODING_COLOR_SPACE  shader_injection[10][0]
@@ -209,7 +208,6 @@ cbuffer shader_injection : register(CBUFFERB) {
 #define TONE_MAP_LOOK                    shader_injection.tone_map_look
 #define EXPOSURE_MODEL                   shader_injection.exposure_model
 #define BLOOM_MODEL                      shader_injection.bloom_model
-#define FL_DARK_BOOST                    shader_injection.fl_dark_boost
 #define FAITHFUL_LUMA_DETECTED           shader_injection.faithful_luma_detected
 #define SWAP_CHAIN_ENCODING_COLOR_SPACE  shader_injection.swap_chain_encoding_color_space
 #define TONE_MAP_EXPOSURE                shader_injection.tone_map_exposure

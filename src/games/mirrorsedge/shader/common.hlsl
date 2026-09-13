@@ -6,7 +6,6 @@
 #define FAITHFUL_LUMA_COMPILED 0
 #endif
 
-static const float3 LUMA_WEIGHTS_709 = float3(0.2126f, 0.7152f, 0.0722f);
 static const float MAX_SCENE_COLOR = 4.0f;  // UE3 fixed point filter buffer scale
 
 float InverseLerp1(float a, float b, float v) {
@@ -38,72 +37,79 @@ float ResolveBloomModel() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Faithful Luma (TdToneMappingPixelShader.usf), evaluated in linear HDR.
+// Faithful Luma (TdToneMappingPixelShader.usf). Constants match the .usf defaults.
 
-// Luminance-anchored extended Reinhard with hue-stable RGB reconstruction and a quadratic
-// highlight desaturation above LumaHDR = 2.0.
-float3 FaithfulLumaToneMap(float3 graded_hdr, out float luma_tm) {
-  const float linear_white = MAX_SCENE_COLOR;
-  float luma_hdr = dot(graded_hdr, LUMA_WEIGHTS_709);
-  luma_tm = luma_hdr * (1.0f + (luma_hdr / (linear_white * linear_white))) / (1.0f + luma_hdr);
-  float3 reconstructed = graded_hdr * (luma_tm / max(luma_hdr, 0.0001f));
+static const float FL_SOFT_CLIP_KNEE = 0.25f;             // graded value where the shoulder starts; below it the image is the shipped image
+static const float FL_SOFT_CLIP_WHITE = MAX_SCENE_COLOR;  // graded value that reaches 1.0
+static const float FL_HUE_PRESERVATION = 0.5f;            // SDR proxy: 0 = per-channel shoulder, 1 = saturated colours keep exact chromaticity
+static const float FL_HUE_BLOWOUT_START = 1.0f;           // light sources blow out from here to FL_SOFT_CLIP_WHITE
 
-  float highlight_chroma_weight = saturate((luma_hdr - (linear_white * 0.5f)) / (linear_white * 1.5f));
-  highlight_chroma_weight *= highlight_chroma_weight;
-  return lerp(reconstructed, luma_tm.xxx, highlight_chroma_weight * 0.55f);
+// SDR proxy: 1 = over-range colours desaturate to the chroma the shipped clip left them. Set per
+// compiled variant by the shader/faithfulluma/tonemap_* files.
+#ifndef FL_HIGHLIGHT_DESATURATION
+#define FL_HIGHLIGHT_DESATURATION 0.0f
+#endif
+
+// Identity below the knee, then an extended-Reinhard shoulder that is C1 at the knee and hits 1.0 at the white point.
+float3 FaithfulLumaShoulder(float3 x) {
+  const float range = 1.0f - FL_SOFT_CLIP_KNEE;
+  const float white_u = (FL_SOFT_CLIP_WHITE - FL_SOFT_CLIP_KNEE) / range;
+  float3 u = max(x - FL_SOFT_CLIP_KNEE, 0.0f) / range;
+  float3 r = u * (1.0f + u / (white_u * white_u)) / (1.0f + u);
+  return min(min(x, FL_SOFT_CLIP_KNEE) + range * r, 1.0f);
 }
 
-// Per-channel SceneMidTones pow in shadows, fading to a neutral luminance exponent by LumaTM ~= 0.73.
-float3 FaithfulLumaMidTones(float3 tonemapped, float luma_tm, float3 scene_mid_tones) {
-  float neutral_mid_tone = dot(scene_mid_tones, LUMA_WEIGHTS_709);
-  float3 neutral = pow(max(0.0001f, tonemapped), neutral_mid_tone.xxx);
-  float3 per_channel = pow(max(0.0001f, tonemapped), scene_mid_tones);
-  float grade_preserve_weight = 1.0f - saturate((luma_tm - 0.16f) * 1.75f);
-  return lerp(neutral, per_channel, grade_preserve_weight);
+float Saturation(float3 color) {
+  return 1.0f - min(color.r, min(color.g, color.b)) / max(max(color.r, max(color.g, color.b)), 0.0001f);
 }
 
-// Display space: blends bright, near-neutral pixels toward their own luminance without adding energy.
-float3 FaithfulLumaWhiteNeutrality(float3 color) {
-  const float white_luma_start = 0.72f;
-  const float white_luma_range = 0.28f;
-  const float white_chroma_start = 0.04f;
-  const float white_chroma_range = 0.30f;
-  const float white_neutrality_strength = 0.85f;
-
-  float luma = dot(color, LUMA_WEIGHTS_709);
-  float display_energy = (color.r + color.g + color.b) / 3.0f;
-  float peak = max(max(color.r, color.g), color.b);
-  float low_channel = min(min(color.r, color.g), color.b);
-  float relative_chroma = (peak - low_channel) / max(peak, 0.001f);
-  float luma_mask = saturate((luma - white_luma_start) / white_luma_range);
-  float neutrality_mask = 1.0f - saturate((relative_chroma - white_chroma_start) / white_chroma_range);
-  float white_mask = luma_mask * luma_mask * neutrality_mask * neutrality_mask;
-  float3 corrected = lerp(color, luma.xxx, white_mask * white_neutrality_strength);
-  float corrected_energy = (corrected.r + corrected.g + corrected.b) / 3.0f;
-  float energy_protection = min(1.0f, display_energy / max(corrected_energy, 0.001f));
-  return saturate(corrected * lerp(1.0f, energy_protection, white_mask));
+// Scales chroma toward the peak channel (hue kept) until the saturation is no higher than the target.
+float3 LimitSaturation(float3 color, float target_saturation) {
+  float peak = max(color.r, max(color.g, color.b));
+  return lerp(peak.xxx, color, min(target_saturation / max(Saturation(color), 0.0001f), 1.0f));
 }
 
-// Faithful Luma bloom (DOFAndBloomGather/Blend .usf): Rec.709 luminance quadratic soft knee.
-// Returns the factor applied to the scene color; `scatter` adds the gather pass hot-source weight.
-float FaithfulLumaBloomFactor(float3 scene_color, float luma, bool scatter) {
-  const float threshold = 1.0f;
-  const float knee = 0.5f;
-  float strength = scatter
-                       ? 1.0f / (MAX_SCENE_COLOR - 1.0f)
-                       : 1.0f / (MAX_SCENE_COLOR * (MAX_SCENE_COLOR - 1.0f));
+// The .usf display transform as shipped, for the SDR output type: per-channel shoulder, blended
+// toward the input chromaticity by saturation (fading out for light sources far over range), then
+// optionally desaturated to the chroma min(graded, 1) would have had. Nothing at or below 1.0 changes.
+float3 FaithfulLumaSdrProxy(float3 graded) {
+  float3 per_channel = FaithfulLumaShoulder(graded);
+  float peak = max(graded.r, max(graded.g, graded.b));
+  float3 hue_preserved = graded * (max(per_channel.r, max(per_channel.g, per_channel.b)) / max(peak, 0.0001f));
 
-  float soft = clamp(luma - threshold + knee, 0.0f, 2.0f * knee);
-  float soft_excess = soft * soft / max(4.0f * knee, 0.001f);
-  float bloom_energy = max(soft_excess, luma - threshold);
-  float peak = max(max(scene_color.r, scene_color.g), scene_color.b);
-  float neutrality = saturate(((luma / max(peak, 0.001f)) - 0.25f) * 1.5f);
-  float scatter_weight = 1.0f;
-  if (scatter) {
-    float hot_weight = saturate((luma - threshold) / max(MAX_SCENE_COLOR - threshold, 0.001f));
-    scatter_weight = 1.0f + hot_weight * hot_weight;
-  }
-  return strength * lerp(0.65f, 1.0f, neutrality) * scatter_weight * bloom_energy / max(luma, 0.001f);
+  float blowout = 1.0f - smoothstep(FL_HUE_BLOWOUT_START, FL_SOFT_CLIP_WHITE, peak);
+  float3 color = lerp(per_channel, hue_preserved, FL_HUE_PRESERVATION * Saturation(graded) * blowout);
+
+  return lerp(color, LimitSaturation(color, Saturation(min(graded, 1.0f))), FL_HIGHLIGHT_DESATURATION);
+}
+
+// The proxy for the HDR bridge, which carries the proxy's chromaticity into HDR. Up to white the
+// shoulder runs on the peak channel so chromaticity is kept (the per-channel compression exists
+// because SDR has no headroom; HDR has it). Over white, light sources lose as much saturation as
+// the per-channel shoulder takes from them, ramping in with the .usf's blowout fade so they are
+// white by FL_SOFT_CLIP_WHITE as shipped, with the hue kept.
+float3 FaithfulLumaHdrProxy(float3 graded) {
+  float peak = max(graded.r, max(graded.g, graded.b));
+  float3 chromaticity_kept = graded * (FaithfulLumaShoulder(peak.xxx).x / max(peak, 0.0001f));
+  float3 blown_out = LimitSaturation(chromaticity_kept, Saturation(FaithfulLumaShoulder(graded)));
+  return lerp(chromaticity_kept, blown_out, smoothstep(FL_HUE_BLOWOUT_START, FL_SOFT_CLIP_WHITE, peak));
+}
+
+// Faithful Luma bloom (DOFAndBloomGatherPixelShader.usf): only the Rec.709 luminance above the
+// threshold blooms, through a quadratic knee, and the factor scales the whole colour so the bloom
+// keeps the pixel's chromaticity. The gather sees scene colour before exposure, so the threshold is
+// the scene luminance that is display white at the authored exposure floor (Scene_ExposureLow^2).
+float FaithfulLumaBloomFactor(float3 scene_color) {
+  const float exposure_floor = 0.85f * 0.85f;
+  const float threshold = 1.0f / exposure_floor;
+  const float knee = 0.25f;
+  const float strength = 1.0f;
+
+  float luminance = renodx::color::y::from::BT709(scene_color);
+  float soft = clamp(luminance - threshold + knee, 0.0f, 2.0f * knee);
+  float soft_excess = soft * soft / (4.0f * knee);
+  float energy = max(soft_excess, luminance - threshold);
+  return strength * energy / max(luminance, 0.001f);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

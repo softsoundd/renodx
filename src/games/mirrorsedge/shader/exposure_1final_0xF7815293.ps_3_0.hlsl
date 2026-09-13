@@ -1,4 +1,4 @@
-// TdToneMapExposurePixelShader.usf (also included by shader/faithfulluma/exposure_0xC7C7E0A5)
+// TdToneMapExposurePixelShader.usf (also included by shader/faithfulluma/exposure_0x7F95BE26)
 #include "./common.hlsl"
 
 float4 ExposureSettings : register( c0 );  // Packed (Manual, MaxDeltaUp, LowClamp, HighClamp)
@@ -14,33 +14,45 @@ float3 SampleAverageSceneColor() {
   return color;
 }
 
-// Faithful Luma: linear key, Rec.709 luminance, frame-rate independent asymmetric adaptation,
-// dark-scene boost above the level's ExposureHigh clamp.
+// Faithful Luma (TdToneMapExposurePixelShader.usf): the shipped meter, key and sqrt-domain clamps
+// with a fixed-rate adaptation in the log domain and a per-frame step floor. The engine uploads
+// ExposureSettings.y = dt * min(SpeedUp, 2.5) and MaxDeltaDown = dt * min(SpeedDown, 3.0); dt is
+// recovered from those under the caps. The floor is in codes of the game's 16-bit exposure store,
+// which is at or above one ulp of the FP16 target the mod upgrades it to across the clamp range.
+static const float FL_ADAPTATION_RATE_UP = 4.0f;    // 1/s, the scene got darker
+static const float FL_ADAPTATION_RATE_DOWN = 8.0f;  // 1/s, the scene got brighter
+static const float FL_MIN_STEP_CODES = 2.0f;
+static const float FL_EXPOSURE_CODE = 64.0f / 65535.0f;
+
 float4 FaithfulLumaExposure() {
-  const float key_value = 0.25f;
-  const float dark_boost_max = FL_DARK_BOOST;
+  float luminosity = dot(SampleAverageSceneColor(), float3(0.3f, 0.59f, 0.11f));
 
-  float avg_luminance = dot(SampleAverageSceneColor(), LUMA_WEIGHTS_709);
+  float target_sqrt = sqrt(0.25f / clamp(luminosity, 1e-7f, 5000.0f));
+  float clamped_sqrt = clamp(target_sqrt, ExposureSettings.z, ExposureSettings.w);
+  float low_exposure = ExposureSettings.z * ExposureSettings.z;
+  float high_exposure = ExposureSettings.w * ExposureSettings.w;
+  float target_exposure = clamped_sqrt * clamped_sqrt;
 
-  float target_unclamped = key_value / max(avg_luminance, 0.001f);
-  float target_clamped = clamp(target_unclamped, ExposureSettings.z, ExposureSettings.w);
-  float clamp_deficit = saturate(1.0f - target_clamped / target_unclamped);
-  float max_exposure = ExposureSettings.w * (1.0f + dark_boost_max);
-  float target_exposure = target_clamped * (1.0f + dark_boost_max * clamp_deficit);
+  // Scene_ExposureManual is multiplied into the stored value; divide it back out of the state.
+  float manual = max(ExposureSettings.x, 0.001f);
+  float previous = saturate(tex2D(PreviousExposureTexture, 0.5).r) * 64.0f / manual;
+  // A cleared target (0) carries no state: start on the target instead of fading up from the floor.
+  float current_exposure = (previous > 0.0f)
+                               ? clamp(previous, max(low_exposure, 0.0001f), high_exposure)
+                               : target_exposure;
 
-  float current_exposure = saturate(tex2D(PreviousExposureTexture, 0.5).r) * 64.0f;
-  current_exposure = clamp(current_exposure, ExposureSettings.z, max_exposure);
+  float delta_time = max(ExposureSettings.y / 2.5f, MaxDeltaDown / 3.0f);
+  float rate = (target_exposure < current_exposure) ? FL_ADAPTATION_RATE_DOWN : FL_ADAPTATION_RATE_UP;
+  float alpha = 1.0f - exp(-rate * delta_time);
 
-  // ExposureSettings.y / MaxDeltaDown are engine rates already scaled by DeltaTime (shipped
-  // defaults 0.275 / 0.475), used here as the frame-time proxy for 1.24/s up and 9.3/s down.
-  float adaptation_alpha = (target_exposure < current_exposure)
-                               ? saturate(MaxDeltaDown * (9.3f / 0.475f))
-                               : saturate(ExposureSettings.y * (1.24f / 0.275f));
+  // Log-domain step toward the target, floored at FL_MIN_STEP_CODES and capped at the remaining gap.
+  // Zero engine speeds (an authored fixed exposure) hold the current value.
+  float gap = target_exposure - current_exposure;
+  float step = current_exposure * (pow(target_exposure / current_exposure, alpha) - 1.0f);
+  float step_magnitude = min(max(abs(step), FL_MIN_STEP_CODES * FL_EXPOSURE_CODE), abs(gap));
+  float new_exposure = current_exposure + (delta_time > 0.0f ? sign(gap) * step_magnitude : 0.0f);
 
-  float new_exposure = lerp(current_exposure, target_exposure, adaptation_alpha);
-  new_exposure = clamp(new_exposure, ExposureSettings.z, max_exposure);
-
-  return saturate(new_exposure * ExposureSettings.x / 64.0f);
+  return saturate(new_exposure * manual / 64.0f);
 }
 
 float4 main() : COLOR

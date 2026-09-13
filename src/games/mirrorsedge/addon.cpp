@@ -34,13 +34,19 @@ renodx::mods::shader::CustomShaders custom_shaders = {
 ShaderInjectData shader_injection;
 
 // Pixel shaders the game compiles from the Faithful Luma .usf sources. Their replacements in
-// shader/faithfulluma/ share the vanilla register layout.
+// shader/faithfulluma/ share the vanilla register layout. The hashes are CRC32s of the bytecode
+// d3dx9_35 produces for those sources under the engine's D3D9 environment (PIXELSHADER=1,
+// VERTEXSHADER=0, COMPILER_HLSL=1, COMPILER_SUPPORTS_ATTRIBUTES=1, no flags; the gather adds
+// NUM_SAMPLES and D3DXSHADER_AVOID_FLOW_CONTROL), which reproduces the vanilla hashes exactly.
+// DOFAndBloomBlendPixelShader is the shipped file and keeps the vanilla hash.
 const std::unordered_set<uint32_t> FAITHFUL_LUMA_SHADER_HASHES = {
-    0x09C4EF79,  // TdToneMappingPixelShader
-    0xC7C7E0A5,  // TdToneMapExposurePixelShader
-    0x476CD0BA,  // DOFAndBloomGatherPixelShader (16 samples)
-    0x79B1C315,  // DOFAndBloomGatherPixelShader (4 samples)
-    0xB2EC74D6,  // DOFAndBloomBlendPixelShader
+    0x8DC35948,  // TdToneMappingPixelShader, HighlightDesaturation = 0
+    0xFD32FA5B,  // TdToneMappingPixelShader, HighlightDesaturation = 1
+    0x7F95BE26,  // TdToneMapExposurePixelShader
+    0xC7EFBFAE,  // DOFAndBloomGatherPixelShader (16 samples)
+    0xBAE6E7E9,  // DOFAndBloomGatherPixelShader (4 samples)
+    0xEA2A4332,  // TdCalibrationShader
+    0x1EAAAADF,  // GammaCorrectionPixelShader
 };
 
 // Presets //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -107,7 +113,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Neutral (Reset All)",
         .section = "Presets",
         .group = "button-line-1",
-        .tooltip = "Vanilla-matching defaults.",
+        .tooltip = "Resets every setting to its default.",
         .on_change = []() {
           for (auto* setting : settings) {
             if (setting->key.empty()) continue;
@@ -200,7 +206,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = LOOK_AUTO,
         .label = "Look",
         .section = "Tone Map",
-        .tooltip = "Auto: Faithful Luma when its shaders are detected, otherwise Vanilla.\n\nVanilla: the game's per-channel grade over a max-channel SDR proxy.\n\nFaithful Luma: luminance-anchored Reinhard, hue-stable highlights, blended per-channel/neutral midtone grade, selective white neutralization.",
+        .tooltip = "Auto: Faithful Luma when its shaders are detected, otherwise Vanilla.\n\nVanilla: the game's per-channel grade over a max-channel SDR proxy.\n\nFaithful Luma: the level grade first, then the Faithful Luma shoulder (identity to 0.25, white at 4.0) on the peak channel, so colours keep their hue; light sources over white whiten by 4.0 as the shaders do.",
         .labels = {"Auto", "Vanilla", "Faithful Luma"},
     },
     new renodx::utils::settings::Setting{
@@ -234,9 +240,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Vanilla+",
         .section = "Blowout",
         .group = "button-line-1",
-        .on_change = []() {
-          ApplyPreset(settings, P_BLOWOUT_HC_VANILLA);
-        },
+        .on_change = []() { ApplyPreset(settings, P_BLOWOUT_HC_VANILLA); },
         .is_visible = []() { return shader_injection.tone_map_type == 2 && !IsFaithfulLumaLook(); },
     },
     new renodx::utils::settings::Setting{
@@ -244,9 +248,7 @@ renodx::utils::settings::Settings settings = {
         .label = "No Hue Shift",
         .section = "Blowout",
         .group = "button-line-1",
-        .on_change = []() {
-          ApplyPreset(settings, P_BLOWOUT_HC_NOHUE);
-        },
+        .on_change = []() { ApplyPreset(settings, P_BLOWOUT_HC_NOHUE); },
         .is_visible = []() { return shader_injection.tone_map_type == 2 && !IsFaithfulLumaLook(); },
     },
 
@@ -301,9 +303,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Gradual",
         .section = "Blowout",
         .group = "button-line-1",
-        .on_change = []() {
-          ApplyPreset(settings, P_BLOWOUT_T_GRADUAL);
-        },
+        .on_change = []() { ApplyPreset(settings, P_BLOWOUT_T_GRADUAL); },
         .is_visible = []() { return shader_injection.tone_map_type == 2 && !IsFaithfulLumaLook(); },
     },
     new renodx::utils::settings::Setting{
@@ -311,9 +311,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Brickwall",
         .section = "Blowout",
         .group = "button-line-1",
-        .on_change = []() {
-          ApplyPreset(settings, P_BLOWOUT_T_BRICKWALL);
-        },
+        .on_change = []() { ApplyPreset(settings, P_BLOWOUT_T_BRICKWALL); },
         .is_visible = []() { return shader_injection.tone_map_type == 2 && !IsFaithfulLumaLook(); },
     },
     new renodx::utils::settings::Setting{
@@ -607,26 +605,11 @@ renodx::utils::settings::Settings settings = {
         .key = "exposure_model",
         .binding = &shader_injection.exposure_model,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = EXPOSURE_AUTO,
+        .default_value = EXPOSURE_FAITHFUL_LUMA,
         .label = "Auto Exposure",
         .section = "Effects",
-        .tooltip = "Auto: Faithful Luma when its shaders are detected, otherwise Vanilla.\n\nVanilla: the game's key (0.25 / average) with the level's exposure range and smoothed adaptation that settles slowly at the end.\n\nFaithful Luma: same key on Rec.709 luminance, clamps applied to the exposure directly (a narrower range than the level authored) and near-instant adaptation with this game's exposure speeds.",
+        .tooltip = "Auto: follows the installed shaders (Faithful Luma when detected, otherwise Vanilla).\n\nVanilla: the game's key (0.25 / average) with the level's exposure range and the shipped adaptation, which settles short of its target by an amount that depends on frame rate and on what was on screen before.\n\nFaithful Luma: the same key and range with a fixed-rate adaptation that lands on the target in well under a second, the same way every time. Works with the vanilla shaders installed too.",
         .labels = {"Auto", "Vanilla", "Faithful Luma"},
-    },
-    new renodx::utils::settings::Setting{
-        .key = "fl_dark_boost",
-        .binding = &shader_injection.fl_dark_boost,
-        .default_value = 0.f,
-        .label = "Dark Scene Boost",
-        .section = "Effects",
-        .tooltip = "Faithful Luma exposure: maximum extra exposure above the level's ExposureHigh clamp in dark scenes. 0 = respect the level's clamp (Faithful Luma ships with 1.0).",
-        .min = 0.f,
-        .max = 1.f,
-        .format = "%.2f",
-        .is_visible = []() {
-          if (shader_injection.exposure_model == EXPOSURE_FAITHFUL_LUMA) return true;
-          return shader_injection.exposure_model == EXPOSURE_AUTO && shader_injection.faithful_luma_detected != 0.f;
-        },
     },
     new renodx::utils::settings::Setting{
         .key = "bloom_model",
@@ -635,7 +618,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = BLOOM_AUTO,
         .label = "Bloom Extraction",
         .section = "Effects",
-        .tooltip = "Auto: Faithful Luma when its shaders are detected, otherwise Vanilla.\n\nVanilla: blooms when any channel exceeds 1.0.\n\nFaithful Luma: Rec.709 luminance soft knee with a bloom core.\n\nSoft (Legacy): ungated bloom shaped by a contrast curve.",
+        .tooltip = "Auto: Faithful Luma when its shaders are detected, otherwise Vanilla.\n\nVanilla: blooms the full colour when any channel exceeds 1.0, so bright surfaces haze and saturated paint glows.\n\nFaithful Luma: only the luminance above display white blooms, in the pixel's own colour, so light sources bloom and bright paint does not.\n\nSoft (Legacy): ungated bloom shaped by a contrast curve.",
         .labels = {"Auto", "Vanilla", "Faithful Luma", "Soft (Legacy)"},
     },
     new renodx::utils::settings::Setting{
@@ -750,7 +733,6 @@ void OnPresetOff() {
       {"tone_map_type", 0.f},
       {"tone_map_look", LOOK_AUTO},
       {"exposure_model", EXPOSURE_AUTO},
-      {"fl_dark_boost", 0.f},
       {"bloom_model", BLOOM_AUTO},
       {"diffuse_white_nits", 203.f},
       {"graphics_white_nits", 203.f},
@@ -860,21 +842,24 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             },
         };
 
-        renodx::mods::swapchain::resource_upgrade_infos.push_back({  // scene color / LDR targets
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
+            // scene color / LDR targets
             .old_format = reshade::api::format::b8g8r8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
             .ignore_size = true,
             .use_resource_view_cloning = false,
             .usage_include = reshade::api::resource_usage::render_target,
         });
-        renodx::mods::swapchain::resource_upgrade_infos.push_back({  // specular gbuffer, pixelated otherwise
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
+            // specular gbuffer, pixelated otherwise
             .old_format = reshade::api::format::r8g8b8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_unorm,
             .ignore_size = true,
             .use_resource_view_cloning = false,
             .usage_include = reshade::api::resource_usage::render_target,
         });
-        renodx::mods::swapchain::resource_upgrade_infos.push_back({  // bloom filter buffers and exposure chain
+        renodx::mods::swapchain::resource_upgrade_infos.push_back({
+            // bloom filter buffers and exposure chain
             .old_format = reshade::api::format::r16g16b16a16_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
             .ignore_size = true,

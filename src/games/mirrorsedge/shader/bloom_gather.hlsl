@@ -1,5 +1,5 @@
 // DOFAndBloomGatherPixelShader.usf (PC, NUM_SAMPLES = 2 * BLOOM_GATHER_TEXCOORDS).
-// Included by the 16-tap (0x7FC2150C / 0x476CD0BA) and 4-tap (0x0FA334D3 / 0x79B1C315) hash files.
+// Included by the 16-tap (0x7FC2150C / 0xC7EFBFAE) and 4-tap (0x0FA334D3 / 0xBAE6E7E9) hash files.
 // Scene color rgb is HDR, alpha carries scene depth; output is scaled by 1/MAX_SCENE_COLOR for the filter buffer.
 #ifndef BLOOM_GATHER_TEXCOORDS
 #define BLOOM_GATHER_TEXCOORDS 8
@@ -21,8 +21,7 @@ struct PS_INPUT {
 
 float3 BloomColor(float3 scene_color, float model) {
   if (model == BLOOM_FAITHFUL_LUMA) {
-    float luma = dot(scene_color, LUMA_WEIGHTS_709);
-    return scene_color * FaithfulLumaBloomFactor(scene_color, luma, true);
+    return scene_color * FaithfulLumaBloomFactor(scene_color);
   }
   if (model == BLOOM_SOFT_LEGACY) {
     return scene_color;  // ungated, shaped below

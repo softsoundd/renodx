@@ -1,4 +1,4 @@
-// DOFAndBloomBlendPixelShader.usf (also included by shader/faithfulluma/bloom_blend_0xB2EC74D6)
+// DOFAndBloomBlendPixelShader.usf
 #include "./common.hlsl"
 sampler2D BlurredImage : register(s1);
 float2 MinMaxBlurClamp : register(c2);
@@ -18,7 +18,6 @@ float4 main(PS_IN i) : COLOR {
   float4 r2;
 
   r0 = tex2D(SceneColorTexture, i.texcoord1);  // focused scene color, depth in alpha
-  float3 focused_color = r0.xyz;
 
   // FocusedWeight = saturate(1 - CalcUnfocusedPercent(depth))
   r1.x = r0.w + -PackedParameters.x;
@@ -40,12 +39,6 @@ float4 main(PS_IN i) : COLOR {
   r0.w = r0.w > 0 ? rcp(r0.w) : 0;  // vanilla: max(WeightSum, 0.001)
 
   o.xyz = r0.xyz * r0.w;
-
-  // Faithful Luma: crisp bloom core from the full resolution focused sample
-  if (ResolveBloomModel() == BLOOM_FAITHFUL_LUMA) {
-    float focused_luma = dot(focused_color, LUMA_WEIGHTS_709);
-    o.xyz += focused_color * FaithfulLumaBloomFactor(focused_color, focused_luma, false) * C_BLOOM;
-  }
 
   return o;
 }
