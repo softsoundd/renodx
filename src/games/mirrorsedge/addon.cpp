@@ -83,25 +83,6 @@ const std::unordered_map<std::string, float> P_BLOWOUT_T_BRICKWALL = {
     {"pblow_max", 0.f},
 };
 
-// XgarhontX's original creative defaults.
-const std::unordered_map<std::string, float> P_HDR_LOOK = {
-    {"lut_colornwc", 1.5f},
-    {"fakewcg_strength", 0.5f},
-    {"fakewcgcorrect_chroma", 0.f},
-    {"fakewcgcorrect_luma", 0.8f},
-    {"fakewcgcorrect_sat", 1.005f},
-    {"c_speedlines", 0.4f},
-    {"c_sunglare", 3.8f},
-    {"c_sunsize", 1.f},
-    {"c_sunlens", 1.f},
-    {"c_worldflare", 1.f},
-    {"c_worldflare_addblur", 1.f},
-    {"c_sky", 1.25f},
-    {"bloom_model", BLOOM_SOFT_LEGACY},
-    {"c_bloom", 1.f},
-    {"c_bloom_contrast", 1.f},
-};
-
 bool IsFaithfulLumaLook() {
   if (shader_injection.tone_map_look == LOOK_FAITHFUL_LUMA) return true;
   return shader_injection.tone_map_look == LOOK_AUTO && shader_injection.faithful_luma_detected != 0.f;
@@ -112,7 +93,6 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::BUTTON,
         .label = "Neutral (Reset All)",
         .section = "Presets",
-        .group = "button-line-1",
         .tooltip = "Resets every setting to its default.",
         .on_change = []() {
           for (auto* setting : settings) {
@@ -121,16 +101,6 @@ renodx::utils::settings::Settings settings = {
             renodx::utils::settings::UpdateSetting(setting->key, setting->default_value);
           }
           renodx::utils::settings::SaveSettings(renodx::utils::settings::global_name + "-preset" + std::to_string(renodx::utils::settings::preset_index));
-        },
-    },
-    new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
-        .label = "HDR Look",
-        .section = "Presets",
-        .group = "button-line-1",
-        .tooltip = "Fake wide gamut, boosted sun glare with a sun disc, shaped world flares, brighter sky, soft bloom, subdued speed lines.",
-        .on_change = []() {
-          ApplyPreset(settings, P_HDR_LOOK);
         },
     },
 
@@ -618,8 +588,8 @@ renodx::utils::settings::Settings settings = {
         .default_value = BLOOM_AUTO,
         .label = "Bloom Extraction",
         .section = "Effects",
-        .tooltip = "Auto: Faithful Luma when its shaders are detected, otherwise Vanilla.\n\nVanilla: blooms the full colour when any channel exceeds 1.0, so bright surfaces haze and saturated paint glows.\n\nFaithful Luma: only the luminance above display white blooms, in the pixel's own colour, so light sources bloom and bright paint does not.\n\nSoft (Legacy): ungated bloom shaped by a contrast curve.",
-        .labels = {"Auto", "Vanilla", "Faithful Luma", "Soft (Legacy)"},
+        .tooltip = "Auto: Faithful Luma when its shaders are detected, otherwise Vanilla.\n\nVanilla: blooms the full colour when any channel exceeds 1.0, so bright surfaces haze and saturated paint glows.\n\nFaithful Luma: only the luminance above display white blooms, in the pixel's own colour, so light sources bloom and bright paint does not.",
+        .labels = {"Auto", "Vanilla", "Faithful Luma"},
     },
     new renodx::utils::settings::Setting{
         .key = "c_bloom",
@@ -630,18 +600,6 @@ renodx::utils::settings::Settings settings = {
         .min = 0.0f,
         .max = 2.0f,
         .format = "%.2f",
-    },
-    new renodx::utils::settings::Setting{
-        .key = "c_bloom_contrast",
-        .binding = &shader_injection.c_bloom_contrast,
-        .default_value = 1.f,
-        .label = "Bloom Contrast",
-        .section = "Effects",
-        .tooltip = "Soft (Legacy) bloom only.",
-        .min = 0.8f,
-        .max = 1.2f,
-        .format = "%.3f",
-        .is_enabled = []() { return shader_injection.bloom_model == BLOOM_SOFT_LEGACY; },
     },
     new renodx::utils::settings::Setting{
         .key = "c_speedlines",
@@ -758,7 +716,6 @@ void OnPresetOff() {
       {"FxHueClip", 100.f},
       {"fakewcg_strength", 0.f},
       {"c_bloom", 1.f},
-      {"c_bloom_contrast", 1.f},
       {"c_speedlines", 1.f},
       {"c_sky", 1.f},
       {"c_worldflare", 1.f},

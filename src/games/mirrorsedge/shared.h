@@ -18,7 +18,6 @@
 #define BLOOM_AUTO          0.f
 #define BLOOM_VANILLA       1.f
 #define BLOOM_FAITHFUL_LUMA 2.f
-#define BLOOM_SOFT_LEGACY   3.f
 
 // Must be 32bit aligned
 // Should be 4x32
@@ -61,7 +60,7 @@ struct ShaderInjectData {
   float pblow_satboost;
   float pblow_guaranteed;
   float c_bloom;
-  float c_bloom_contrast;
+  float unused_7_3;
 
   float c_speedlines;
   float c_mov;
@@ -132,7 +131,6 @@ float4 shader_injection[13] : register(c50);
 #define PBLOW_SATBOOST                   shader_injection[7][0]
 #define PBLOW_GUARANTEED                 shader_injection[7][1]
 #define C_BLOOM                          shader_injection[7][2]
-#define C_BLOOM_CONTRAST                 shader_injection[7][3]
 
 #define C_SPEEDLINES                     shader_injection[8][0]
 #define C_MOV                            shader_injection[8][1]
@@ -201,7 +199,6 @@ cbuffer shader_injection : register(CBUFFERB) {
 #define PBLOW_SATBOOST                   shader_injection.pblow_satboost
 #define PBLOW_GUARANTEED                 shader_injection.pblow_guaranteed
 #define C_BLOOM                          shader_injection.c_bloom
-#define C_BLOOM_CONTRAST                 shader_injection.c_bloom_contrast
 #define C_SPEEDLINES                     shader_injection.c_speedlines
 #define C_MOV                            shader_injection.c_mov
 #define C_SKY                            shader_injection.c_sky

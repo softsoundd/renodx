@@ -23,9 +23,6 @@ float3 BloomColor(float3 scene_color, float model) {
   if (model == BLOOM_FAITHFUL_LUMA) {
     return scene_color * FaithfulLumaBloomFactor(scene_color);
   }
-  if (model == BLOOM_SOFT_LEGACY) {
-    return scene_color;  // ungated, shaped below
-  }
   return any(scene_color > 1) ? scene_color : 0;  // vanilla gate
 }
 
@@ -48,16 +45,6 @@ float4 main(PS_INPUT i) : COLOR {
     GatherTap(i.uvs[t].wz, model, scene_sum, bloom_sum);
   }
 
-  if (model == BLOOM_SOFT_LEGACY) {
-    const float y = renodx::color::y::from::BT709(bloom_sum);
-    if (y > 0) {
-      float y1 = y;
-      y1 = renodx::color::grade::Contrast(y1, C_BLOOM_CONTRAST * 1.12, 0.36);
-      y1 = renodx::color::grade::Shadows(y1, 0.1, 0.36);
-      bloom_sum *= y1 / y;
-      bloom_sum = max(bloom_sum, 0);
-    }
-  }
   bloom_sum *= C_BLOOM;
 
   float3 avg_bloom = bloom_sum * BloomScale.x / NUM_SAMPLES;
