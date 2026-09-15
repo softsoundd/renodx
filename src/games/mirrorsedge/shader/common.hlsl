@@ -37,8 +37,7 @@ float ResolveBloomModel() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Faithful Luma (TdToneMappingPixelShader.usf). Constants match the .usf defaults; the .usf
-// documents them.
+// Faithful Luma (TdToneMappingPixelShader.usf). Constants match the .usf defaults.
 
 static const float FL_SOFT_CLIP_KNEE = 0.8f;        // graded value where the shoulder starts with the exposure at the level's floor
 static const float FL_SOFT_CLIP_WHITE = 3.0f;       // graded value that reaches 1.0 at the floor
