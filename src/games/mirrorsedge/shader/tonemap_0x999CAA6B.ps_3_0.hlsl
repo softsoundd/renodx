@@ -20,8 +20,10 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR
   float4 r0;
   float4 r1;
 
-  // exposure
+  // exposure; g carries the level's exposure floor on the same scale (see the exposure shader), so
+  // r / g is the meter's gain over it. A texel without it reads as no gain.
   r0 = tex2D(ExposureTexture, 0.5);
+  const float exposure_gain = (r0.y > 0) ? r0.x / r0.y : 1.f;
   r0.x = r0.x * 64 * VCG_EXPOSURE;
 
   // color
@@ -44,7 +46,7 @@ float4 main(float2 texcoord : TEXCOORD) : COLOR
   // common.hlsl); the graded HDR colour is the bridge reference and the proxy is the neutral SDR.
   if (faithful_luma) {
     float3 graded = pow(max(colorU * SceneInverseHighLights.xyz - scene_shadows, 0.0f), SceneMidTones.xyz);
-    float3 proxy = (TONE_MAP_TYPE == 0) ? FaithfulLumaSdrProxy(graded) : FaithfulLumaHdrProxy(graded);
+    float3 proxy = (TONE_MAP_TYPE == 0) ? FaithfulLumaSdrProxy(graded, exposure_gain) : FaithfulLumaHdrProxy(graded, exposure_gain);
     colorU = graded;
     colorN = proxy;
 

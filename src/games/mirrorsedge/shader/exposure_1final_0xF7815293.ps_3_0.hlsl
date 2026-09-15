@@ -1,4 +1,4 @@
-// TdToneMapExposurePixelShader.usf (also included by shader/faithfulluma/exposure_0x7F95BE26)
+// TdToneMapExposurePixelShader.usf (also included by the shader/faithfulluma/exposure_* variant)
 #include "./common.hlsl"
 
 float4 ExposureSettings : register( c0 );  // Packed (Manual, MaxDeltaUp, LowClamp, HighClamp)
@@ -14,13 +14,23 @@ float3 SampleAverageSceneColor() {
   return color;
 }
 
-// Faithful Luma (TdToneMapExposurePixelShader.usf): the shipped meter, key and sqrt-domain clamps
-// with a fixed-rate adaptation in the log domain and a per-frame step floor. The engine uploads
-// ExposureSettings.y = dt * min(SpeedUp, 2.5) and MaxDeltaDown = dt * min(SpeedDown, 3.0); dt is
-// recovered from those under the caps. The floor is in codes of the game's 16-bit exposure store,
-// which is at or above one ulp of the FP16 target the mod upgrades it to across the clamp range.
-static const float FL_ADAPTATION_RATE_UP = 4.0f;    // 1/s, the scene got darker
-static const float FL_ADAPTATION_RATE_DOWN = 8.0f;  // 1/s, the scene got brighter
+// The level's exposure floor (Scene_ExposureLow^2) on the stored value's scale. Both models write it
+// to the output's green channel, which nothing else reads, so the tone mapper knows the meter's gain
+// over the floor for the Faithful Luma shoulder whichever exposure model is running.
+float FloorOutput() {
+  return ExposureSettings.z * ExposureSettings.z * max(ExposureSettings.x, 0.001f) / 64.0f;
+}
+
+// Faithful Luma (TdToneMapExposurePixelShader.usf): the shipped meter, key and sqrt-domain clamps,
+// then movement in stops at a fixed speed per second that eases in exponentially inside the
+// transition distance, with a per-frame step floor in codes of the game's 16-bit exposure store (at
+// or above one ulp of the FP16 target the mod upgrades it to). The engine uploads
+// ExposureSettings.y = dt * min(SpeedUp, 2.5) and MaxDeltaDown = dt * min(SpeedDown, 3.0); each
+// direction recovers dt from its own upload, so a level's lowered or zeroed speed slows or holds
+// that direction as shipped.
+static const float FL_ADAPTATION_SPEED_TO_LIGHT = 12.0f;  // stops/s, exposure falling
+static const float FL_ADAPTATION_SPEED_TO_DARK = 6.0f;    // stops/s, exposure rising
+static const float FL_EXPONENTIAL_TRANSITION_STOPS = 1.5f;
 static const float FL_MIN_STEP_CODES = 2.0f;
 static const float FL_EXPOSURE_CODE = 64.0f / 65535.0f;
 
@@ -41,18 +51,20 @@ float4 FaithfulLumaExposure() {
                                ? clamp(previous, max(low_exposure, 0.0001f), high_exposure)
                                : target_exposure;
 
-  float delta_time = max(ExposureSettings.y / 2.5f, MaxDeltaDown / 3.0f);
-  float rate = (target_exposure < current_exposure) ? FL_ADAPTATION_RATE_DOWN : FL_ADAPTATION_RATE_UP;
-  float alpha = 1.0f - exp(-rate * delta_time);
+  bool to_light = target_exposure < current_exposure;
+  float delta_time = to_light ? MaxDeltaDown / 3.0f : ExposureSettings.y / 2.5f;
+  float speed = to_light ? FL_ADAPTATION_SPEED_TO_LIGHT : FL_ADAPTATION_SPEED_TO_DARK;
 
-  // Log-domain step toward the target, floored at FL_MIN_STEP_CODES and capped at the remaining gap.
-  // Zero engine speeds (an authored fixed exposure) hold the current value.
+  float gap_stops = abs(log2(target_exposure / current_exposure));
+  float linear_stops = speed * delta_time;
+  float eased_stops = gap_stops * (1.0f - exp(-speed * delta_time / FL_EXPONENTIAL_TRANSITION_STOPS));
+  float step_stops = min((gap_stops > FL_EXPONENTIAL_TRANSITION_STOPS) ? linear_stops : eased_stops, gap_stops);
   float gap = target_exposure - current_exposure;
-  float step = current_exposure * (pow(target_exposure / current_exposure, alpha) - 1.0f);
-  float step_magnitude = min(max(abs(step), FL_MIN_STEP_CODES * FL_EXPOSURE_CODE), abs(gap));
+  float step = abs(current_exposure * exp2(sign(gap) * step_stops) - current_exposure);
+  float step_magnitude = min(max(step, FL_MIN_STEP_CODES * FL_EXPOSURE_CODE), abs(gap));
   float new_exposure = current_exposure + (delta_time > 0.0f ? sign(gap) * step_magnitude : 0.0f);
 
-  return saturate(new_exposure * manual / 64.0f);
+  return float4(saturate(new_exposure * manual / 64.0f), FloorOutput(), 0, 0);
 }
 
 float4 main() : COLOR
@@ -95,6 +107,7 @@ float4 main() : COLOR
   r0.x = r0.x * ExposureSettings.x;
   o = r0.x * 0.015625;  // 1 / 64
   o = saturate(o);
+  o.y = FloorOutput();
 
   return o;
 }

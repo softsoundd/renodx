@@ -37,71 +37,136 @@ float ResolveBloomModel() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Faithful Luma (TdToneMappingPixelShader.usf). Constants match the .usf defaults.
+// Faithful Luma (TdToneMappingPixelShader.usf). Constants match the .usf defaults; the .usf
+// documents them.
 
-static const float FL_SOFT_CLIP_KNEE = 0.25f;             // graded value where the shoulder starts; below it the image is the shipped image
-static const float FL_SOFT_CLIP_WHITE = MAX_SCENE_COLOR;  // graded value that reaches 1.0
-static const float FL_HUE_PRESERVATION = 0.5f;            // SDR proxy: 0 = per-channel shoulder, 1 = saturated colours keep exact chromaticity
-static const float FL_HUE_BLOWOUT_START = 1.0f;           // light sources blow out from here to FL_SOFT_CLIP_WHITE
-
-// SDR proxy: 1 = over-range colours desaturate to the chroma the shipped clip left them. Set per
-// compiled variant by the shader/faithfulluma/tonemap_* files.
-#ifndef FL_HIGHLIGHT_DESATURATION
-#define FL_HIGHLIGHT_DESATURATION 0.0f
-#endif
+static const float FL_SOFT_CLIP_KNEE = 0.8f;        // graded value where the shoulder starts with the exposure at the level's floor
+static const float FL_SOFT_CLIP_WHITE = 3.0f;       // graded value that reaches 1.0 at the floor
+static const float FL_KNEE_GAIN_START = 1.25f;      // meter gain over the floor up to which the shoulder stays put
+static const float FL_KNEE_GAIN_POWER = 2.0f;       // beyond it the knee falls as gain^-power ...
+static const float FL_WHITE_GAIN_POWER = 0.5f;      // ... and the white rises as gain^power
+static const float FL_SOFT_CLIP_KNEE_MIN = 0.35f;
+static const float FL_SOFT_CLIP_WHITE_MAX = 6.0f;
+static const float FL_BEZOLD_BRUCKE_PER_STOP = 1.5f;  // degrees of OKLab hue per stop the shoulder darkened the colour
 
 // Identity below the knee, then an extended-Reinhard shoulder that is C1 at the knee and hits 1.0 at the white point.
-float3 FaithfulLumaShoulder(float3 x) {
-  const float range = 1.0f - FL_SOFT_CLIP_KNEE;
-  const float white_u = (FL_SOFT_CLIP_WHITE - FL_SOFT_CLIP_KNEE) / range;
-  float3 u = max(x - FL_SOFT_CLIP_KNEE, 0.0f) / range;
+float3 FaithfulLumaShoulder(float3 x, float knee, float white) {
+  const float range = 1.0f - knee;
+  const float white_u = (white - knee) / range;
+  float3 u = max(x - knee, 0.0f) / range;
   float3 r = u * (1.0f + u / (white_u * white_u)) / (1.0f + u);
-  return min(min(x, FL_SOFT_CLIP_KNEE) + range * r, 1.0f);
+  return min(min(x, knee) + range * r, 1.0f);
 }
 
-float Saturation(float3 color) {
-  return 1.0f - min(color.r, min(color.g, color.b)) / max(max(color.r, max(color.g, color.b)), 0.0001f);
+float2 OklabChroma(float3 color) {
+  return renodx::color::oklab::from::BT709(color).yz;
 }
 
-// Scales chroma toward the peak channel (hue kept) until the saturation is no higher than the target.
-float3 LimitSaturation(float3 color, float target_saturation) {
-  float peak = max(color.r, max(color.g, color.b));
-  return lerp(peak.xxx, color, min(target_saturation / max(Saturation(color), 0.0001f), 1.0f));
+// Direction of the Bezold-Bruecke shift for an OKLab hue in degrees: +1 counter-clockwise (red toward
+// yellow, green toward cyan), -1 clockwise; zero at the invariant hues yellow 110, green 165, blue 264,
+// purplish red 355.
+float BezoldBruckeDirection(float hue_deg) {
+  const float pi = renodx::math::PI;
+  float d = frac((hue_deg - 355.0f) / 360.0f) * 360.0f;
+  float s = sin(pi * d / 115.0f);
+  s = (d >= 115.0f) ? -sin(pi * (d - 115.0f) / 55.0f) : s;
+  s = (d >= 170.0f) ? sin(pi * (d - 170.0f) / 99.0f) : s;
+  s = (d >= 269.0f) ? -sin(pi * (d - 269.0f) / 91.0f) : s;
+  return s;
 }
 
-// The .usf display transform as shipped, for the SDR output type: per-channel shoulder, blended
-// toward the input chromaticity by saturation (fading out for light sources far over range), then
-// optionally desaturated to the chroma min(graded, 1) would have had. Nothing at or below 1.0 changes.
-float3 FaithfulLumaSdrProxy(float3 graded) {
-  float3 per_channel = FaithfulLumaShoulder(graded);
+// Signed misalignment of a colour's OKLab hue from a target chroma direction; zero when they match.
+float HueMismatch(float3 color, float2 target) {
+  float2 ab = OklabChroma(color);
+  return ab.x * target.y - ab.y * target.x;
+}
+
+// The shoulder's knee and white for a meter gain over the level's floor (E / Low^2, read from the
+// exposure buffer's r and g).
+void FaithfulLumaShoulderShape(float gain, out float knee, out float white) {
+  float gain_norm = max(gain / FL_KNEE_GAIN_START, 1.0f);
+  knee = max(FL_SOFT_CLIP_KNEE * pow(gain_norm, -FL_KNEE_GAIN_POWER), FL_SOFT_CLIP_KNEE_MIN);
+  white = min(FL_SOFT_CLIP_WHITE * pow(gain_norm, FL_WHITE_GAIN_POWER), FL_SOFT_CLIP_WHITE_MAX);
+}
+
+// The .usf hue step on a shaped (range-limited) rendering of graded: its peak and floor channels
+// are kept while the middle channel is solved so the OKLab hue is the scene's, turned by the
+// Bezold-Bruecke shift for the stops the shaping darkened the colour and, by authored_hue, toward
+// the hue the shipped clip gave the colour weighted by the share of its luminance above display
+// white. Neutral input and input with two channels tied have no middle channel and pass through.
+float3 FaithfulLumaSolveHue(float3 graded, float3 shaped, float authored_hue, float bezold_brucke_per_stop) {
+  float peak_in = max(graded.r, max(graded.g, graded.b));
+  float low_in = min(graded.r, min(graded.g, graded.b));
+  float peak_out = max(shaped.r, max(shaped.g, shaped.b));
+  float low_out = min(shaped.r, min(shaped.g, shaped.b));
+  float3 is_peak = (graded >= peak_in) ? 1.0f : 0.0f;
+  float3 is_low = (graded <= low_in) ? 1.0f - is_peak : 0.0f;
+  float3 is_mid = 1.0f - is_peak - is_low;
+  float3 fixed = is_peak * peak_out + is_low * low_out;
+
+  float2 chroma_in = OklabChroma(graded);
+  float hue_in = degrees(atan2(chroma_in.y, chroma_in.x));
+  float luma_in = max(renodx::color::y::from::BT709(graded), 1e-4f);
+  float stops = max(log2(luma_in / max(renodx::color::y::from::BT709(shaped), 1e-4f)), 0.0f);
+  float turn_deg = bezold_brucke_per_stop * stops * BezoldBruckeDirection(hue_in);
+  if (authored_hue > 0.0f) {
+    float3 clip = min(graded, 1.0f);
+    float2 chroma_clip = OklabChroma(clip);
+    float hue_clip = degrees(atan2(chroma_clip.y, chroma_clip.x));
+    float share = saturate((luma_in - renodx::color::y::from::BT709(clip)) / luma_in);
+    float chroma_kept = saturate(length(chroma_clip) / max(length(chroma_in), 1e-4f));
+    float to_clip = hue_clip - hue_in;
+    to_clip -= 360.0f * round(to_clip / 360.0f);
+    turn_deg += authored_hue * share * chroma_kept * to_clip;
+  }
+  float turn = radians(turn_deg);
+  float2 target = float2(chroma_in.x * cos(turn) - chroma_in.y * sin(turn), chroma_in.x * sin(turn) + chroma_in.y * cos(turn));
+
+  // Hue is monotonic in the middle channel: two secant steps from the channel-ratio solution and
+  // the shaped colour's own middle value land on the target.
+  float mid0 = low_out + (dot(graded, is_mid) - low_in) * ((peak_out - low_out) / max(peak_in - low_in, 1e-4f));
+  float mid1 = dot(shaped, is_mid);
+  float f0 = HueMismatch(fixed + is_mid * mid0, target);
+  float f1 = HueMismatch(fixed + is_mid * mid1, target);
+  float mid2 = clamp(mid0 - f0 * (mid1 - mid0) / (f1 - f0 + 1e-6f), low_out, peak_out);
+  float f2 = HueMismatch(fixed + is_mid * mid2, target);
+  float mid3 = clamp(mid2 - f2 * (mid2 - mid1) / (f2 - f1 + 1e-6f), low_out, peak_out);
+  return fixed + is_mid * mid3;
+}
+
+// The SDR output type shows the .usf result as installed: the meter-tightened shoulder per channel,
+// then its hue solved with the Bezold-Bruecke turn and the full authored share of the clip's hue.
+float3 FaithfulLumaSdrProxy(float3 graded, float gain) {
+  float knee, white;
+  FaithfulLumaShoulderShape(gain, knee, white);
+  return FaithfulLumaSolveHue(graded, FaithfulLumaShoulder(graded, knee, white), 1.0f, FL_BEZOLD_BRUCKE_PER_STOP);
+}
+
+// The HDR bridge takes the proxy's chromaticity into HDR. The per-channel shoulder desaturates
+// because SDR has no headroom; HDR has it, so up to diffuse white the scene's chromaticity is kept
+// (the shoulder run on the peak channel), and from there to the shoulder's white point it blends
+// toward the per-channel saturation, so light sources whiten as the shaders do while sunlit
+// surfaces keep their tint. The hue is solved on that blend without the Bezold-Bruecke turn, which
+// is for a rendering dimmer than the scene; the authored share of the clip's hue is the Authored
+// Hue setting.
+float3 FaithfulLumaHdrProxy(float3 graded, float gain) {
+  float knee, white;
+  FaithfulLumaShoulderShape(gain, knee, white);
   float peak = max(graded.r, max(graded.g, graded.b));
-  float3 hue_preserved = graded * (max(per_channel.r, max(per_channel.g, per_channel.b)) / max(peak, 0.0001f));
-
-  float blowout = 1.0f - smoothstep(FL_HUE_BLOWOUT_START, FL_SOFT_CLIP_WHITE, peak);
-  float3 color = lerp(per_channel, hue_preserved, FL_HUE_PRESERVATION * Saturation(graded) * blowout);
-
-  return lerp(color, LimitSaturation(color, Saturation(min(graded, 1.0f))), FL_HIGHLIGHT_DESATURATION);
-}
-
-// The proxy for the HDR bridge, which carries the proxy's chromaticity into HDR. Up to white the
-// shoulder runs on the peak channel so chromaticity is kept (the per-channel compression exists
-// because SDR has no headroom; HDR has it). Over white, light sources lose as much saturation as
-// the per-channel shoulder takes from them, ramping in with the .usf's blowout fade so they are
-// white by FL_SOFT_CLIP_WHITE as shipped, with the hue kept.
-float3 FaithfulLumaHdrProxy(float3 graded) {
-  float peak = max(graded.r, max(graded.g, graded.b));
-  float3 chromaticity_kept = graded * (FaithfulLumaShoulder(peak.xxx).x / max(peak, 0.0001f));
-  float3 blown_out = LimitSaturation(chromaticity_kept, Saturation(FaithfulLumaShoulder(graded)));
-  return lerp(chromaticity_kept, blown_out, smoothstep(FL_HUE_BLOWOUT_START, FL_SOFT_CLIP_WHITE, peak));
+  float3 chromaticity_kept = graded * (FaithfulLumaShoulder(peak.xxx, knee, white).x / max(peak, 0.0001f));
+  float3 per_channel = FaithfulLumaShoulder(graded, knee, white);  // same peak, lower floor channel
+  float3 shaped = lerp(chromaticity_kept, per_channel, smoothstep(1.0f, white, peak));
+  return FaithfulLumaSolveHue(graded, shaped, FL_AUTHORED_HUE, 0.0f);
 }
 
 // Faithful Luma bloom (DOFAndBloomGatherPixelShader.usf): only the Rec.709 luminance above the
 // threshold blooms, through a quadratic knee, and the factor scales the whole colour so the bloom
 // keeps the pixel's chromaticity. The gather sees scene colour before exposure, so the threshold is
-// the scene luminance that is display white at the authored exposure floor (Scene_ExposureLow^2).
+// the scene luminance that is display white at the default volume's exposure floor; levels the
+// meter exposes lower bloom sunlit surfaces below display white, as the shipped gate did more.
 float FaithfulLumaBloomFactor(float3 scene_color) {
-  const float exposure_floor = 0.85f * 0.85f;
-  const float threshold = 1.0f / exposure_floor;
+  const float default_floor_exposure = 0.85f * 0.85f;
+  const float threshold = 1.0f / default_floor_exposure;
   const float knee = 0.25f;
   const float strength = 1.0f;
 
